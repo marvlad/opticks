@@ -3,28 +3,19 @@
 SPMTAccessor.h
 ===============
 
-Provides access to JUNO PMT data during standalone
+Provides access to JUNO PMT data during standalone 
 optical only testing WITH_CUSTOM4 and without j/PMTSim.
-For example::
-
-   ~/opticks/g4cx/tests/G4CXTest_GEOM.sh
-   ~/opticks/g4cx/tests/G4CXApp.h
-   ~/opticks/u4/U4Physics.hh
-   ~/opticks/u4/U4Physics.cc
-
-Attempt to provide standalone access to JUNO PMT data
-without depending on junosw, using SPMT.h which is
-how the data is passed to QPMT.hh and onto the GPU
-in qpmt.h
-
 **/
 
-
 #include <cstdlib>
-#include "sstr.h"
+#include <array>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
+#include <cassert>
 #include "SPMT.h"
 
-#ifdef WITH_CUSTOM4
+#ifdef WITH_CUSTOM4 
 #include "C4IPMTAccessor.h"
 struct SPMTAccessor : public C4IPMTAccessor
 #else
@@ -44,16 +35,23 @@ struct SPMTAccessor
     double      get_pmtid_qe( int pmtid, double energy_MeV ) const ;
     void        get_stackspec( std::array<double, 16>& ss, int pmtcat, double energy_eV ) const ;
     const char* get_typename() const ;
+
+#ifdef WITH_CUSTOM4
+    // Implement the pure virtuals from C4IPMTAccessor
+    void        get_stackspec_pmtid_theta_deg( std::array<double, 16>& ss, int pmtcat, int pmtid, double energy_eV, double theta_deg ) const override ;
+    double      get_pmtid_qe_angular(int pmtid,double energy, double lposcost, double minus_cos_theta_aoi) const override ;
+    int         get_implementation_version() const override ;
+    void        set_implementation_version(int v) override ;
+#endif
     //]
 
     static std::string Desc(std::array<double, 16>& ss );
 };
 
-
 inline SPMTAccessor* SPMTAccessor::Load(const char* path)
 {
-    SPMT* pmt = SPMT::CreateFromJPMT(path);
-    //if(pmt == nullptr) return nullptr ;
+    SPMT* pmt = SPMT::Load(path);
+    if(pmt == nullptr) return nullptr ;
 
     SPMTAccessor* accessor = new SPMTAccessor(pmt);
     assert( accessor );
@@ -69,17 +67,17 @@ inline SPMTAccessor::SPMTAccessor( const SPMT* _pmt )
 
 inline int SPMTAccessor::get_num_lpmt() const
 {
-    return s_pmt::NUM_CD_LPMT ;
+    return SPMT::NUM_LPMT ;
 }
 
 inline double SPMTAccessor::get_qescale( int pmtid ) const
 {
-    float qs = pmt->get_qescale_from_lpmtid(pmtid);
+    float qs = pmt->get_qescale(pmtid);
     return qs ;
 }
 inline int SPMTAccessor::get_pmtcat( int pmtid ) const
 {
-    int cat = pmt->get_lpmtcat_from_lpmtid(pmtid) ;
+    int cat = pmt->get_lpmtcat(pmtid) ;   // assumes pmtid is for LPMT  
 
     if(VERBOSE) std::cout
         << "SPMTAccessor::get_pmtcat"
@@ -91,37 +89,14 @@ inline int SPMTAccessor::get_pmtcat( int pmtid ) const
     return cat ;
 }
 
-
-
-/**
-SPMTAccessor::get_pmtid_qe
-----------------------------
-
-From C4CustomART::doIt it is apparent that PMTAccessor which
-SPMTAccessor aims to stand in for in standalone running
-without j/PMTSim is inconsistent in its energy units.
-
-+----------------------------+-------------+
-|  Method                    | energy unit |
-+============================+=============+
-| PMTAccessor::get_pmtid_qe  | energy_MeV  |
-+----------------------------+-------------+
-| PMTAccessor::get_stackspec | energy_eV   |
-+----------------------------+-------------+
-
-**/
-
-inline double SPMTAccessor::get_pmtid_qe( int lpmtid, double energy_MeV ) const
+inline double SPMTAccessor::get_pmtid_qe( int pmtid, double energy_MeV ) const
 {
-    int lpmtidx = s_pmt::lpmtidx_from_pmtid(lpmtid);
-
     float energy_eV = energy_MeV*1e6 ;
-    float qe = pmt->get_lpmtidx_qe(lpmtidx, energy_eV) ;
+    float qe = pmt->get_pmtid_qe(pmtid, energy_eV) ;
 
     if(VERBOSE) std::cout
         << "SPMTAccessor::get_pmtid_qe"
-        << " lpmtid " << lpmtid
-        << " lpmtidx " << lpmtidx
+        << " pmtid " << pmtid
         << " energy_MeV " << std::scientific << energy_MeV
         << " energy_eV " << std::scientific << energy_eV
         << " qe " << std::scientific << qe
@@ -139,18 +114,6 @@ inline void SPMTAccessor::get_stackspec( std::array<double, 16>& spec, int pmtca
 
     const float* qq = q_spec.cdata();
     for(int i=0 ; i < 16 ; i++) spec[i] = double(qq[i]) ;
-
-#ifdef DEBUG
-    if(VERBOSE) std::cout
-        << "SPMTAccessor::get_stackspec"
-        << " pmtcat " << pmtcat
-        << " energy " << std::scientific << energy
-        << std::endl
-        << Desc(spec)
-        << std::endl
-        ;
-#endif
-
 }
 
 inline std::string SPMTAccessor::Desc(std::array<double, 16>& spec ) // static
@@ -167,13 +130,42 @@ inline std::string SPMTAccessor::Desc(std::array<double, 16>& spec ) // static
     return str ;
 }
 
-
-
 inline const char* SPMTAccessor::get_typename() const
 {
     return TYPENAME ;
 }
 
+#ifdef WITH_CUSTOM4
+inline void SPMTAccessor::get_stackspec_pmtid_theta_deg(
+    std::array<double, 16>& ss,
+    int pmtcat,
+    int /*pmtid*/,
+    double energy_eV,
+    double /*theta_deg*/) const
+{
+    // Just ignore theta for now and call the simpler version
+    get_stackspec(ss, pmtcat, energy_eV);
+}
 
+inline double SPMTAccessor::get_pmtid_qe_angular(
+    int pmtid,
+    double energy,
+    double /*lposcost*/,
+    double /*minus_cos_theta_aoi*/) const
+{
+    // Ignore angular dependence for now
+    return get_pmtid_qe(pmtid, energy*1e-6); // expects MeV
+}
 
+inline int SPMTAccessor::get_implementation_version() const
+{
+    return 1; // placeholder
+}
 
+inline void SPMTAccessor::set_implementation_version(int v)
+{
+    if(VERBOSE) std::cout
+        << "SPMTAccessor::set_implementation_version " << v
+        << std::endl;
+}
+#endif
